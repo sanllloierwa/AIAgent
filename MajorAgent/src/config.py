@@ -2,7 +2,7 @@
 import os
 
 # DeepSeek API 配置 (OpenAI兼容模式)
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-2868****************************")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-0bdcb03edb274eb88680ec6e06044311")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"           # DeepSeek官方端点[reference:4][reference:5]
 DEEPSEEK_MODEL = "deepseek-v4-pro"                      # 主力专业模型[reference:6]
 # DEEPSEEK_MODEL = "deepseek-v4-flash"                  # 可选的轻量模型

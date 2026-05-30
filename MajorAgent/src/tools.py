@@ -1,8 +1,10 @@
 # tools.py
 import json
+import os
 import re
+import hashlib
 import requests
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from openai import OpenAI
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, DEEPSEEK_REASONING_EFFORT,
@@ -14,9 +16,9 @@ deepseek_client = OpenAI(
     base_url=DEEPSEEK_BASE_URL
 )
 
-# ---------- 步骤1：生成PPT大纲 ----------
+# ---------- 步骤1：生成PPT大纲（不预设帧，只列要点）----------
 def generate_ppt_outline(requirement: str, preferences: dict) -> str:
-    prompt = f"""你是一个资深的演示文稿设计专家。请根据以下需求，生成一份**内容足够详细和完整**的PPT大纲，这份大纲将直接决定最终PPT的质量。
+    prompt = f"""你是一个资深的演示文稿设计专家。请根据以下需求，生成一份**内容足够详细和完整**的PPT大纲。
 
 用户偏好：
 - 主题风格：{preferences.get('ppt_theme', 'default')}
@@ -25,27 +27,22 @@ def generate_ppt_outline(requirement: str, preferences: dict) -> str:
 {requirement}
 
 要求：
-1. 大纲必须包含至少4-6个大节（section），每个大节下包含3-6张幻灯片（frame）。
-2. 每张幻灯片的要点必须是**完整的陈述句**，包含具体的概念、方法、数据或案例，不能只写空洞的标题词（如"定义"、"概述"）。
+1. 大纲必须包含至少4-6个大节（section），每个大节下列出4-8个核心要点。
+2. 每个要点必须是**完整的陈述句**，包含具体的概念、方法、数据或案例。
 3. 内容结构需完整：引言/背景（为什么要讲这个）→ 核心内容（拆分多个section，层层递进）→ 案例/应用 → 总结/展望。
-4. 每个要点写成一个完整的陈述句，像备课笔记一样具体。例如：不要写"- 监督学习"，要写"- 监督学习使用带有标签的训练数据，模型通过学习输入-输出映射关系来进行预测，典型算法包括线性回归和决策树"。
+4. 要点像备课笔记一样具体。例如不要写"- 监督学习"，要写"- 监督学习使用带标签的训练数据，模型通过学习输入-输出映射关系来进行预测，典型算法包括线性回归和决策树"。
 5. 使用以下严格格式输出（方便程序解析）：
 
 # TITLE: [PPT总标题，简洁有力]
 
 ## SECTION: [第一节标题]
-### FRAME: [幻灯片1标题]
 - 要点1的完整陈述句（1-2句话，包含具体信息）
 - 要点2的完整陈述句（1-2句话，包含具体信息）
 - 要点3的完整陈述句（1-2句话，包含具体信息）
 
-### FRAME: [幻灯片2标题]
+## SECTION: [第二节标题]
 - 要点1的完整陈述句
 - 要点2的完整陈述句
-
-## SECTION: [第二节标题]
-### FRAME: [幻灯片标题]
-- ...
 
 6. 仅输出大纲，不要包含任何额外解释。"""
 
@@ -61,13 +58,12 @@ def generate_ppt_outline(requirement: str, preferences: dict) -> str:
 
 # ---------- 解析大纲为结构化数据 ----------
 def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
-    """解析大纲文本，返回 (总标题, [{section_title, frames: [{title, points}]}, ...])"""
+    """解析大纲文本，返回 (总标题, [{title, points: [str, ...]}, ...])"""
     lines = outline_text.strip().split('\n')
 
     title = ""
     sections = []
     current_section = None
-    current_frame = None
 
     for line in lines:
         line = line.strip()
@@ -76,60 +72,58 @@ def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
 
         title_match = re.match(r'^#\s*TITLE:\s*(.+)', line, re.IGNORECASE)
         section_match = re.match(r'^##\s*SECTION:\s*(.+)', line, re.IGNORECASE)
-        frame_match = re.match(r'^###\s*FRAME:\s*(.+)', line, re.IGNORECASE)
         bullet_match = re.match(r'^[-*]\s+(.+)', line)
 
         if title_match:
             title = title_match.group(1).strip()
         elif section_match:
-            current_frame = None
             current_section = {
                 "title": section_match.group(1).strip(),
-                "frames": []
-            }
-            sections.append(current_section)
-        elif frame_match and current_section is not None:
-            current_frame = {
-                "title": frame_match.group(1).strip(),
                 "points": []
             }
-            current_section["frames"].append(current_frame)
-        elif bullet_match and current_frame is not None:
-            current_frame["points"].append(bullet_match.group(1).strip())
+            sections.append(current_section)
+        elif bullet_match and current_section is not None:
+            current_section["points"].append(bullet_match.group(1).strip())
 
     return title, sections
 
 
-# ---------- 步骤2：为单个section生成详细LaTeX ----------
-def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str) -> str:
-    """为单个section生成Beamer LaTeX帧（不含preamble）"""
-    frames_desc = []
-    for j, frame in enumerate(section["frames"]):
-        points_text = "\n".join([f"  - {p}" for p in frame["points"]])
-        frames_desc.append(f"  幻灯片{j+1}: {frame['title']}\n{points_text}")
+# ---------- 步骤2：为单个section生成详细LaTeX（自主决定帧数）----------
+def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None) -> str:
+    """为单个section生成Beamer LaTeX帧（不含preamble），模型自主决定拆成几帧"""
+    points_text = "\n".join([f"  {i+1}. {p}" for i, p in enumerate(section["points"])])
 
-    section_desc = f"第{sec_idx}节: {section['title']}\n" + "\n".join(frames_desc)
+    image_instruction = ""
+    if image_path:
+        image_instruction = f"""
+图片素材：本节配有一张本地图片，路径为 `{image_path}`（注意：路径必须使用正斜杠 / 不要使用反斜杠 \\，否则LaTeX编译失败）。请在合适的位置（建议在概述帧之后的第一帧或第二帧）使用以下代码插入图片：
+```
+\\begin{{frame}}\\frametitle{{...}}
+\\begin{{center}}
+\\includegraphics[width=0.7\\textwidth]{{{image_path}}}
+\\end{{center}}
+\\end{{frame}}
+```
+图片应与本节主题相关，插入后可以紧接着用一帧来解读图片内容。"""
 
-    prompt = f"""你是一个LaTeX Beamer专家，擅长制作内容详尽、有实用价值的演示文稿。请为以下PPT中的**单独一节**生成Beamer LaTeX代码。
-
-用户偏好：
-- 主题：{preferences.get('ppt_theme', 'default')}
-- 字体大小：{preferences.get('font_size', '11pt')}
+    prompt = f"""你是一个LaTeX Beamer专家。请为以下PPT中的**单独一节**生成Beamer LaTeX代码。
 
 PPT总标题：{ppt_title}
 当前进度：第 {sec_idx}/{total_sec} 节
+本节标题：{section['title']}
 
-本节大纲：
-{section_desc}
+本节需要覆盖的要点：
+{points_text}
+{image_instruction}
 
-核心要求（非常重要）：
-1. 为每一张幻灯片生成一个 \\begin{{frame}}...\\end{{frame}} 块。
-2. **每个要点必须展开为3-5句的详细说明段落**，不能只写一句标题。使用 \\begin{{itemize}} 列出要点后，在每个 \\item 下方用段落文字展开说明。
-3. 添加具体的数据、案例、或示例来支撑每个观点，让听众有实际收获。
-4. 适当使用 \\textbf{{}}、\\alert{{}}、\\textcolor{{blue}}{{}} 等强调关键词。
-5. 本节的第一张幻灯片应为节标题页 + 本节内容概览：\\section{{{section['title']}}}
-6. 每张幻灯片的内容应该足够丰富，使得一个不了解该主题的听众也能看懂。
-7. **只输出 \\section{{...}} 和一系列 \\begin{{frame}}...\\end{{frame}} 块**，不要包含 \\documentclass、\\begin{{document}}、\\end{{document}} 等文档结构代码。
+核心要求：
+1. **内容要详细**：每个要点展开为3-5句的详细说明，添加具体案例、数据或示例。
+2. **自主决定帧数**：根据内容量自行决定拆成几帧（通常3-8帧）。复杂要点可以独占一帧，简单要点可以合并。不要让任何一帧的内容溢出幻灯片。
+3. **每帧内容适量**：一帧内最多放1-2个主题+展开说明。如果 \\item 的展开段落超过5行，说明该主题应该单独成帧。
+4. 第一帧必须是节标题+本节概览：列出本节的几个子主题（3-5条简短提要）。
+5. 使用 \\begin{{frame}}\\frametitle{{...}}...\\end{{frame}} 结构。
+6. 适当使用 \\textbf{{}}、\\alert{{}} 强调关键词，使用 \\begin{{itemize}} 组织要点。
+7. **只输出 \\section{{...}} 和一系列 \\begin{{frame}}...\\end{{frame}} 块**，不要包含 \\documentclass、\\begin{{document}}、\\end{{document}}。
 8. 不要使用 ```latex 代码块包裹，直接输出纯LaTeX代码。"""
 
     response = deepseek_client.chat.completions.create(
@@ -151,7 +145,6 @@ def _merge_sections(ppt_title: str, sections_latex: List[str], preferences: dict
     font_size = preferences.get('font_size', '11pt')
     include_toc = preferences.get('include_toc', True)
 
-    # 处理主题：Madrid等主题名首字母大写
     theme_map = {
         "default": "default",
         "madrid": "Madrid",
@@ -194,7 +187,7 @@ def _merge_sections(ppt_title: str, sections_latex: List[str], preferences: dict
 
 # ---------- PPT生成流水线（步骤1+2+3）----------
 def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
-    """完整三步流水线：大纲 → 逐节生成 → 合并"""
+    """完整三步流水线：大纲 → 搜索配图 → 逐节生成 → 合并"""
     # 步骤1：生成大纲
     print("\n📋 步骤 1/3：正在生成详细大纲...")
     outline = generate_ppt_outline(requirement, preferences)
@@ -207,20 +200,42 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
     if not sections:
         return "错误：无法解析大纲，请重试。"
 
-    print(f"\n✅ 解析出 {len(sections)} 个大节，共 {sum(len(s['frames']) for s in sections)} 张幻灯片")
+    total_points = sum(len(s["points"]) for s in sections)
+    print(f"\n✅ 解析出 {len(sections)} 个小节，共 {total_points} 个要点（实际帧数由模型自主决定）")
 
-    # 步骤2：逐节生成
+    # 搜索并下载配图
+    section_images = {}
+    pexels_available = PEXELS_API_KEY and PEXELS_API_KEY != "YOUR_PEXELS_API_KEY"
+    if pexels_available:
+        print(f"\n🖼️  正在为各节搜索配图...")
+        for i, section in enumerate(sections):
+            query = f"{ppt_title} {section['title']}"
+            urls = search_image(query, max_results=1)
+            if urls:
+                local_path = download_image(urls[0], save_dir=".")
+                if local_path:
+                    section_images[i] = local_path
+                    print(f"   [{i+1}/{len(sections)}] {section['title']} -> 已下载")
+            else:
+                print(f"   [{i+1}/{len(sections)}] {section['title']} -> 未找到图片")
+    else:
+        print(f"\n⚠️  未配置 Pexels API Key，跳过图片搜索。")
+
+    # 步骤2：逐节生成（模型会在每节内自主拆分帧）
     print(f"\n📝 步骤 2/3：正在逐节生成详细内容...")
     sections_latex = []
     for i, section in enumerate(sections):
-        print(f"  生成第 {i+1}/{len(sections)} 节: {section['title']}（{len(section['frames'])} 帧）...")
-        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title)
+        n_points = len(section["points"])
+        has_img = "🖼️" if i in section_images else ""
+        print(f"  生成第 {i+1}/{len(sections)} 节: {section['title']}（{n_points} 个要点）{has_img}...")
+        image_path = section_images.get(i)
+        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title, image_path)
         sections_latex.append(latex)
 
     # 步骤3：合并
     print(f"\n🔗 步骤 3/3：正在合并所有章节...")
     final_latex = _merge_sections(ppt_title, sections_latex, preferences)
-    print(f"✅ PPT 生成完成！共 {len(sections)} 节、{sum(len(s['frames']) for s in sections)} 张幻灯片。")
+    print(f"✅ PPT 生成完成！共 {len(sections)} 节。")
 
     return final_latex
 
@@ -267,19 +282,37 @@ def search_image(query: str, max_results: int = 3) -> List[str]:
         return []
 
 
+def download_image(url: str, save_dir: str = ".") -> Optional[str]:
+    """下载图片到本地，返回本地文件路径"""
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        ext = url.split('.')[-1].split('?')[0] or 'jpg'
+        if ext not in ('jpg', 'jpeg', 'png', 'gif', 'bmp'):
+            ext = 'jpg'
+        filename = hashlib.md5(url.encode()).hexdigest()[:12] + '.' + ext
+        filepath = os.path.join(save_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+        return filepath.replace('\\', '/')  # LaTeX 必须使用正斜杠
+    except Exception as e:
+        print(f"   ⚠️ 图片下载失败: {e}")
+        return None
+
+
 # ---------- 工具包装类（注入偏好）----------
 class AgentTools:
     def __init__(self, preferences: dict):
         self.prefs = preferences
 
     def generate_ppt(self, outline: str) -> str:
-        """根据大纲生成完整PPT（逐节生成+合并）"""
+        """根据需求生成完整PPT（三步流水线）"""
         return generate_ppt_pipeline(outline, self.prefs)
 
     def generate_handout(self, outline: str) -> str:
         return generate_handout_from_outline(outline, self.prefs)
 
-    def get_preferences(self) -> str:
+    def get_preferences(self, _: str = "") -> str:
         return json.dumps(self.prefs, indent=2)
 
     def set_preference(self, key_value: str) -> str:
@@ -296,4 +329,11 @@ class AgentTools:
 
     def search_image(self, query: str) -> str:
         urls = search_image(query, max_results=3)
-        return json.dumps(urls)
+        if not urls:
+            return json.dumps({"status": "no_results", "urls": []})
+        local_paths = []
+        for url in urls:
+            local = download_image(url, save_dir=".")
+            if local:
+                local_paths.append(local)
+        return json.dumps({"status": "ok", "urls": urls, "local_paths": local_paths})

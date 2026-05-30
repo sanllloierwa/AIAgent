@@ -17,15 +17,15 @@ REACT_PROMPT = """你是一个智能助手，擅长生成PPT和讲义。当前�
 {preferences}
 
 你可以使用以下工具：
-- generate_ppt: 【三步流水线】生成完整详细的PPT。输入：用户的原始需求描述（直接传入用户的话即可，工具内部自动完成"大纲生成→逐节展开→合并"三步）。输入越详细，生成的PPT越完整。
+- generate_ppt: 【三步流水线+自动配图】生成完整详细的PPT。输入：用户的原始需求描述（直接传入用户的话即可）。工具内部自动完成"大纲生成→搜索配图→逐节展开→合并"全流程。每节会自动搜索并嵌入相关图片。
 - generate_handout: 根据纲要生成讲义的LaTeX代码。输入：文本纲要。
 - get_preferences: 查看当前偏好设置，无需输入。
 - set_preference: 修改偏好，输入格式 'key=value'。
-- search_image: 根据关键词搜索图片，输入为关键词（字符串），返回图片URL列表（JSON格式）。
+- search_image: 根据关键词搜索并下载图片到本地，输入为关键词（字符串），返回图片URL和本地路径（JSON格式）。
 
 工作流程建议：
-1. 当用户要求生成PPT时，直接将用户的完整需求传给 generate_ppt 工具。
-2. generate_ppt 会自动先展示生成的大纲，然后逐节生成详细内容，最后合并为完整PPT。
+1. 当用户要求生成PPT时，直接将用户的完整需求传给 generate_ppt 工具，图片会自动配入。
+2. 如需单独搜索图片（不生成PPT），使用 search_image。
 3. 生成完成后，向用户简要说明结果（不需要重复输出LaTeX代码，工具已自动保存）。
 
 请严格遵循以下格式：
@@ -66,6 +66,8 @@ def save_and_compile(latex_code: str, username: str) -> str:
     """保存 LaTeX 代码到 .tex 文件并尝试编译为 PDF"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     tex_filename = f"{username}_output_{timestamp}.tex"
+    # 修正 LLM 可能生成的错误路径：.\ → ./
+    latex_code = re.sub(r'\{\.\\([a-zA-Z0-9])', r'{./\1', latex_code)
     with open(tex_filename, "w", encoding='utf-8') as f:
         f.write(latex_code)
     print(f"📄 LaTeX 代码已保存至 {tex_filename}")
@@ -137,7 +139,7 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
         llm_output = response.choices[0].message.content
         print(f"\n🤖 Agent: {llm_output}\n")
 
-        # 解析 Action（在 Final Answer 之前解析，因为工具结果要先拿到）
+        # 解析 Action
         action_match = re.search(r"Action:\s*(\w+)", llm_output)
         input_match = re.search(r"Action Input:\s*(.+)", llm_output)
         tool_name = "unknown"
@@ -148,13 +150,12 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
             tool_input = input_match.group(1).strip().strip('"')
             if tool_name in tool_funcs:
                 observation = tool_funcs[tool_name](tool_input)
-                # 如果工具返回了 LaTeX 代码，立即保存（不等 Final Answer）
+                # 如果工具返回了 LaTeX 代码，立即保存
                 if isinstance(observation, str) and observation.startswith(r"\documentclass"):
                     save_and_compile(observation, username)
                     obs_lines = observation.count('\n')
                     observation = f"[LaTeX文档已生成并保存，共{obs_lines}行]"
                 elif isinstance(observation, str):
-                    # 截断长文本观察
                     if len(observation) > 500:
                         observation = observation[:500] + "..."
                 else:
@@ -167,15 +168,14 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
         history += f"Thought: {llm_output.split('Thought:')[-1].split('Action:')[0]}\n"
         history += f"Action: {tool_name}\nAction Input: {tool_input}\nObservation: {observation}\n"
 
-        # 若修改了偏好，回调持久化
         if tool_name == "set_preference" and "偏好已更新" in observation:
             update_prefs_callback(username, tools.prefs)
 
-        # Final Answer 处理（放在 Action 处理之后）
+        # Final Answer 处理（放在 Action 之后，确保本轮工具已执行）
         if "Final Answer:" in llm_output:
             final = llm_output.split("Final Answer:")[-1].strip()
             print(f"✅ 最终结果已输出。")
-            # 只在工具还没有保存过文件时，才从 Final Answer 中提取 LaTeX 保存
+            # 只在工具还没保存过文件时，才从 Final Answer 中提取 LaTeX
             code_match = re.search(r"```latex\n(.*?)\n```", final, re.DOTALL)
             if code_match and not (action_match and input_match and tool_name == "generate_ppt"):
                 latex_code = code_match.group(1)

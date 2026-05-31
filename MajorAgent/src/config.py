@@ -30,3 +30,6 @@ MAX_AGENT_ROUNDS = 5
 # 图片搜索配置（在 https://www.pexels.com/api/ 免费注册获取 Key）
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "bWhTXghJr43Ed2Kot9FlcO90wXZsx2sIdnflSlnDKHuqdvOhJw95FK45")
 PEXELS_API_URL = "https://api.pexels.com/v1/search"
+# Pixabay 作为备选图片源（在 https://pixabay.com/api/docs/ 免费注册获取 Key）
+PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
+PIXABAY_API_URL = "https://pixabay.com/api/"

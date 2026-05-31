@@ -8,8 +8,9 @@ from typing import List, Tuple, Optional
 from openai import OpenAI
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, DEEPSEEK_REASONING_EFFORT,
-    PEXELS_API_KEY, PEXELS_API_URL
+    PEXELS_API_KEY, PEXELS_API_URL, PIXABAY_API_KEY, PIXABAY_API_URL
 )
+from research import research_topic, web_search, web_fetch, HAS_DDGS
 
 deepseek_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -17,7 +18,16 @@ deepseek_client = OpenAI(
 )
 
 # ---------- 步骤1：生成PPT大纲（不预设帧，只列要点）----------
-def generate_ppt_outline(requirement: str, preferences: dict) -> str:
+def generate_ppt_outline(requirement: str, preferences: dict, research_brief: Optional[str] = None) -> str:
+    research_section = ""
+    if research_brief:
+        research_section = f"""
+
+📚 **联网研究参考资料**（务必参考以下真实数据/案例）：
+{research_brief}
+
+"""
+
     prompt = f"""你是一个资深的演示文稿设计专家。请根据以下需求，生成一份**内容足够详细和完整**的PPT大纲。
 
 用户偏好：
@@ -25,11 +35,11 @@ def generate_ppt_outline(requirement: str, preferences: dict) -> str:
 
 需求内容：
 {requirement}
-
+{research_section}
 要求：
 1. 大纲必须包含至少4-6个大节（section），每个大节下列出4-8个核心要点。
 2. 每个要点必须是**完整的陈述句**，包含具体的概念、方法、数据或案例。
-3. 内容结构需完整：引言/背景（为什么要讲这个）→ 核心内容（拆分多个section，层层递进）→ 案例/应用 → 总结/展望。
+3. {("如果有参考资料，务必引用其中的具体数据、案例和事实，而非凭空编造。" if research_brief else "")}内容结构需完整：引言/背景（为什么要讲这个）→ 核心内容（拆分多个section，层层递进）→ 案例/应用 → 总结/展望。
 4. 要点像备课笔记一样具体。例如不要写"- 监督学习"，要写"- 监督学习使用带标签的训练数据，模型通过学习输入-输出映射关系来进行预测，典型算法包括线性回归和决策树"。
 5. 使用以下严格格式输出（方便程序解析）：
 
@@ -54,8 +64,6 @@ def generate_ppt_outline(requirement: str, preferences: dict) -> str:
         extra_body={"thinking": {"type": "enabled"}}
     )
     return response.choices[0].message.content.strip()
-
-
 # ---------- 解析大纲为结构化数据 ----------
 def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
     """解析大纲文本，返回 (总标题, [{title, points: [str, ...]}, ...])"""
@@ -89,14 +97,25 @@ def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
 
 
 # ---------- 步骤2：为单个section生成详细LaTeX（自主决定帧数）----------
-def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None) -> str:
+def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None, research_brief: Optional[str] = None) -> str:
     """为单个section生成Beamer LaTeX帧（不含preamble），模型自主决定拆成几帧"""
     points_text = "\n".join([f"  {i+1}. {p}" for i, p in enumerate(section["points"])])
+
+    research_section = ""
+    if research_brief:
+        research_section = f"""
+
+📚 参考资料（使用其中的真实数据/案例来充实本节）：
+{research_brief[:1200]}
+"""
 
     image_instruction = ""
     if image_path:
         image_instruction = f"""
-图片素材：本节配有一张本地图片，路径为 `{image_path}`（注意：路径必须使用正斜杠 / 不要使用反斜杠 \\，否则LaTeX编译失败）。请在合适的位置（建议在概述帧之后的第一帧或第二帧）使用以下代码插入图片：
+图片素材：本节配有一张配图，路径为 `{image_path}`（路径必须使用正斜杠/，严禁使用反斜杠\\）。
+
+使用原则：
+- 如果图片能呼应本节主题，在概述帧之后插入图片帧（1帧即可）：
 ```
 \\begin{{frame}}\\frametitle{{...}}
 \\begin{{center}}
@@ -104,7 +123,8 @@ def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, tota
 \\end{{center}}
 \\end{{frame}}
 ```
-图片应与本节主题相关，插入后可以紧接着用一帧来解读图片内容。"""
+- 插入图片后可加1帧简短解读，说明图片与本节的关联。
+- **如果图片与本节内容完全无关，不要强行插入**——宁可不用也不要破坏专业性。"""
 
     prompt = f"""你是一个LaTeX Beamer专家。请为以下PPT中的**单独一节**生成Beamer LaTeX代码。
 
@@ -114,6 +134,7 @@ PPT总标题：{ppt_title}
 
 本节需要覆盖的要点：
 {points_text}
+{research_section}
 {image_instruction}
 
 核心要求：
@@ -185,12 +206,56 @@ def _merge_sections(ppt_title: str, sections_latex: List[str], preferences: dict
     return preamble + "\n" + body + ending
 
 
+# ---------- 图片关键词提取（LLM一次性为所有section生成英文搜索词）----------
+def _extract_image_keywords(ppt_title: str, sections: List[dict]) -> dict:
+    """用LLM为所有section提取英文图片搜索关键词（一次调用）"""
+    sections_text = "\n".join([
+        f"Section {i}: {s['title'][:60]}\n  Key concepts: {'; '.join(s['points'][:3])}"
+        for i, s in enumerate(sections)
+    ])
+
+    prompt = f"""For each section of a Chinese presentation below, generate 2-3 short English keywords (1-3 words each) that would find relevant stock photos on Pexels.
+
+Presentation topic: {ppt_title[:100]}
+
+{sections_text}
+
+IMPORTANT:
+- Focus on concrete, visual nouns (e.g., "robot arm", "team collaboration", "computer code", "city skyline")
+- Avoid abstract terms that don't photograph well (not "synergy", "optimization theory")
+- Use common English terms that photographers tag their photos with
+
+Return ONLY a valid JSON object:
+{{"0": ["keyword1", "keyword2"], "1": ["keyword1", "keyword2"], ...}}
+Map the section index to its keywords array.
+
+JSON:"""
+
+    response = deepseek_client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=500
+    )
+    try:
+        text = response.choices[0].message.content.strip()
+        text = re.sub(r'^```json\s*|```$', '', text).strip()
+        return json.loads(text)
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        return {}
+
+
 # ---------- PPT生成流水线（步骤1+2+3）----------
 def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
-    """完整三步流水线：大纲 → 搜索配图 → 逐节生成 → 合并"""
-    # 步骤1：生成大纲
+    """完整流水线：联网研究 → 大纲 → 关键词提取 → 配图 → 逐节生成 → 合并"""
+    # 步骤0：联网研究（如启用）
+    research_brief = None
+    if preferences.get('enable_web_research', True) and HAS_DDGS:
+        research_brief = research_topic(requirement, max_sources=3)
+
+    # 步骤1：生成大纲（注入研究简报）
     print("\n📋 步骤 1/3：正在生成详细大纲...")
-    outline = generate_ppt_outline(requirement, preferences)
+    outline = generate_ppt_outline(requirement, preferences, research_brief)
     print("=" * 50)
     print(outline)
     print("=" * 50)
@@ -203,25 +268,36 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
     total_points = sum(len(s["points"]) for s in sections)
     print(f"\n✅ 解析出 {len(sections)} 个小节，共 {total_points} 个要点（实际帧数由模型自主决定）")
 
-    # 搜索并下载配图
+    # 搜索并下载配图（用LLM提取英文关键词）
     section_images = {}
     pexels_available = PEXELS_API_KEY and PEXELS_API_KEY != "YOUR_PEXELS_API_KEY"
     if pexels_available:
-        print(f"\n🖼️  正在为各节搜索配图...")
+        print(f"\n🔑 正在为各节提取英文搜索关键词...")
+        section_keywords = _extract_image_keywords(ppt_title, sections)
+
+        print(f"🖼️  正在搜索配图...")
         for i, section in enumerate(sections):
-            query = f"{ppt_title} {section['title']}"
-            urls = search_image(query, max_results=1)
-            if urls:
-                local_path = download_image(urls[0], save_dir=".")
-                if local_path:
-                    section_images[i] = local_path
-                    print(f"   [{i+1}/{len(sections)}] {section['title']} -> 已下载")
-            else:
-                print(f"   [{i+1}/{len(sections)}] {section['title']} -> 未找到图片")
+            keywords = section_keywords.get(str(i), [])
+            if not keywords:
+                keywords = [section['title'][:40]]
+
+            found = False
+            for kw in keywords[:3]:
+                urls = search_image_combined(kw, max_results=1)
+                if urls:
+                    local_path = download_image(urls[0], save_dir=".")
+                    if local_path:
+                        section_images[i] = local_path
+                        print(f"   [{i+1}/{len(sections)}] {section['title'][:30]}... -> '{kw}' -> 已下载")
+                        found = True
+                        break
+
+            if not found:
+                print(f"   [{i+1}/{len(sections)}] {section['title'][:30]}... -> 未找到相关图片，跳过")
     else:
         print(f"\n⚠️  未配置 Pexels API Key，跳过图片搜索。")
 
-    # 步骤2：逐节生成（模型会在每节内自主拆分帧）
+    # 步骤2：逐节生成（注入研究简报）
     print(f"\n📝 步骤 2/3：正在逐节生成详细内容...")
     sections_latex = []
     for i, section in enumerate(sections):
@@ -229,7 +305,7 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
         has_img = "🖼️" if i in section_images else ""
         print(f"  生成第 {i+1}/{len(sections)} 节: {section['title']}（{n_points} 个要点）{has_img}...")
         image_path = section_images.get(i)
-        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title, image_path)
+        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title, image_path, research_brief)
         sections_latex.append(latex)
 
     # 步骤3：合并
@@ -278,8 +354,31 @@ def search_image(query: str, max_results: int = 3) -> List[str]:
         data = response.json()
         return [photo['src']['original'] for photo in data.get('photos', [])]
     except Exception as e:
-        print(f"图片搜索失败: {e}")
+        print(f"   Pexels 搜索失败: {e}")
         return []
+
+
+def search_image_pixabay(query: str, max_results: int = 3) -> List[str]:
+    """Pixabay 图片搜索（备选源）"""
+    if not PIXABAY_API_KEY:
+        return []
+    params = {"key": PIXABAY_API_KEY, "q": query, "per_page": max_results}
+    try:
+        response = requests.get(PIXABAY_API_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return [hit['largeImageURL'] for hit in data.get('hits', [])]
+    except Exception as e:
+        print(f"   Pixabay 搜索失败: {e}")
+        return []
+
+
+def search_image_combined(query: str, max_results: int = 3) -> List[str]:
+    """组合搜索：先 Pexels，无结果则 Pixabay"""
+    results = search_image(query, max_results)
+    if not results:
+        results = search_image_pixabay(query, max_results)
+    return results
 
 
 def download_image(url: str, save_dir: str = ".") -> Optional[str]:
@@ -328,7 +427,7 @@ class AgentTools:
             return "格式错误，请使用 key=value，例如 ppt_theme=Madrid"
 
     def search_image(self, query: str) -> str:
-        urls = search_image(query, max_results=3)
+        urls = search_image_combined(query, max_results=3)
         if not urls:
             return json.dumps({"status": "no_results", "urls": []})
         local_paths = []
@@ -337,3 +436,17 @@ class AgentTools:
             if local:
                 local_paths.append(local)
         return json.dumps({"status": "ok", "urls": urls, "local_paths": local_paths})
+
+    def web_search(self, query: str) -> str:
+        """联网搜索，返回结果列表"""
+        results = web_search(query, max_results=5)
+        if not results:
+            return json.dumps({"status": "no_results"})
+        if "error" in results[0]:
+            return json.dumps({"status": "error", "message": results[0]["error"]})
+        return json.dumps(results, ensure_ascii=False)
+
+    def web_fetch(self, url: str) -> str:
+        """抓取网页正文"""
+        content = web_fetch(url.strip(), max_chars=3000)
+        return content if content else "[获取失败]"

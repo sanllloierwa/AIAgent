@@ -17,16 +17,18 @@ REACT_PROMPT = """你是一个智能助手，擅长生成PPT和讲义。当前�
 {preferences}
 
 你可以使用以下工具：
-- generate_ppt: 【三步流水线+自动配图】生成完整详细的PPT。输入：用户的原始需求描述（直接传入用户的话即可）。工具内部自动完成"大纲生成→搜索配图→逐节展开→合并"全流程。每节会自动搜索并嵌入相关图片。
+- generate_ppt: 【联网研究+自动配图】生成完整详细的PPT。输入：用户的原始需求描述。工具内部自动完成"联网搜索→资料整理→大纲生成→搜索配图→逐节展开→合并"全流程。生成的PPT基于真实网络资料，数据可靠。
 - generate_handout: 根据纲要生成讲义的LaTeX代码。输入：文本纲要。
+- web_search: 联网搜索资料，输入为搜索关键词（字符串），返回标题、URL、摘要列表（JSON格式）。
+- web_fetch: 抓取指定网页的正文内容，输入为URL（字符串），返回提取的文本。
+- search_image: 根据关键词搜索并下载图片到本地，输入为关键词（字符串）。
 - get_preferences: 查看当前偏好设置，无需输入。
-- set_preference: 修改偏好，输入格式 'key=value'。
-- search_image: 根据关键词搜索并下载图片到本地，输入为关键词（字符串），返回图片URL和本地路径（JSON格式）。
+- set_preference: 修改偏好，输入格式 'key=value'。可用键：ppt_theme, font_size, include_toc, handout_detail, enable_web_research。
 
 工作流程建议：
-1. 当用户要求生成PPT时，直接将用户的完整需求传给 generate_ppt 工具，图片会自动配入。
-2. 如需单独搜索图片（不生成PPT），使用 search_image。
-3. 生成完成后，向用户简要说明结果（不需要重复输出LaTeX代码，工具已自动保存）。
+1. 如果用户要求生成PPT，直接将用户的完整需求传给 generate_ppt 工具，联网研究和配图全自动完成。
+2. 如果需要更深入研究，先用 web_search 搜索，再用 web_fetch 抓取重点页面，然后将收集的资料合并后传给 generate_ppt。
+3. 生成完成后，向用户简要说明结果。
 
 请严格遵循以下格式：
 
@@ -117,6 +119,8 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
         "get_preferences": tools.get_preferences,
         "set_preference": tools.set_preference,
         "search_image": tools.search_image,
+        "web_search": tools.web_search,
+        "web_fetch": tools.web_fetch,
     }
 
     print(f"\n欢迎 {username}！当前偏好：{prefs}\n")

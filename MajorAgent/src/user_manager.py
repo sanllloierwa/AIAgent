@@ -29,7 +29,8 @@ def register(username: str, password: str, preferences: dict = None) -> bool:
             "ppt_theme": "default",
             "font_size": "11pt",
             "include_toc": True,
-            "handout_detail": "medium"
+            "handout_detail": "medium",
+            "enable_web_research": True
         },
         "created_at": datetime.now().isoformat()
     }

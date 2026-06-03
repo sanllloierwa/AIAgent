@@ -24,6 +24,9 @@ DEEPSEEK_MODEL = "deepseek-v4-pro"                      # 主力专业模型
 # DeepSeek 思考模式强度：'low', 'medium', 'high'
 DEEPSEEK_REASONING_EFFORT = "medium"
 
+# 用户自定义图片目录
+USER_IMAGES_DIR = "user_images"
+
 # 以下配置保持不变
 USER_DB_FILE = "users.json"
 MAX_AGENT_ROUNDS = 5

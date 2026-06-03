@@ -1,0 +1,6 @@
+\beamer@sectionintoc {1}{科学基础与全球变暖的观测事实}{3}{0}{1}
+\beamer@sectionintoc {2}{环境与社会经济系统的多重危机}{11}{0}{2}
+\beamer@sectionintoc {3}{碳排放溯源与关键部门的减碳技术路径}{19}{0}{3}
+\beamer@sectionintoc {4}{适应气候变化：韧性基础设施与生态系统修复}{26}{0}{4}
+\beamer@sectionintoc {5}{城市与企业的前沿实践：从马德里到全球}{34}{0}{5}
+\beamer@sectionintoc {6}{从政策杠杆到个人行动：迈向净零的协同路径}{40}{0}{6}

@@ -30,7 +30,8 @@ def register(username: str, password: str, preferences: dict = None) -> bool:
             "font_size": "11pt",
             "include_toc": True,
             "handout_detail": "medium",
-            "enable_web_research": True
+            "enable_web_research": True,
+            "image_source": "both"
         },
         "created_at": datetime.now().isoformat()
     }

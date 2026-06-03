@@ -2,15 +2,17 @@
 import json
 import os
 import re
-import hashlib
-import requests
 from typing import List, Tuple, Optional
 from openai import OpenAI
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, DEEPSEEK_REASONING_EFFORT,
-    PEXELS_API_KEY, PEXELS_API_URL, PIXABAY_API_KEY, PIXABAY_API_URL
+    PEXELS_API_KEY
 )
 from research import research_topic, web_search, web_fetch, HAS_DDGS
+from images import (
+    search_image_combined, download_image,
+    extract_image_keywords, collect_user_images
+)
 
 deepseek_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -97,7 +99,7 @@ def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
 
 
 # ---------- 步骤2：为单个section生成详细LaTeX（自主决定帧数）----------
-def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None, research_brief: Optional[str] = None) -> str:
+def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None, research_brief: Optional[str] = None, user_images: Optional[List[dict]] = None) -> str:
     """为单个section生成Beamer LaTeX帧（不含preamble），模型自主决定拆成几帧"""
     points_text = "\n".join([f"  {i+1}. {p}" for i, p in enumerate(section["points"])])
 
@@ -110,7 +112,27 @@ def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, tota
 """
 
     image_instruction = ""
-    if image_path:
+    if user_images:
+        img_list = "\n".join([
+            f"\\includegraphics[width=0.7\\textwidth]{{{img['path']}}}   -- {img['desc']}"
+            for img in user_images
+        ])
+        image_instruction = f"""
+用户提供的图片素材（请根据本节主题选择最匹配的1张，如都不匹配可不插入）：
+
+{img_list}
+
+使用方式（直接复制上面选中的那行 \\includegraphics 代码即可）：
+```
+\\begin{{frame}}\\frametitle{{...}}
+\\begin{{center}}
+（在此粘贴你选中的 \\includegraphics 命令，路径必须完全一致）
+\\end{{center}}
+\\end{{frame}}
+```
+- 插入图片后可加1帧简短解读，说明图片与本节的关联
+- **如果没有一张图片与本节内容相关，不要强行插入**"""
+    elif image_path:
         image_instruction = f"""
 图片素材：本节配有一张配图，路径为 `{image_path}`（路径必须使用正斜杠/，严禁使用反斜杠\\）。
 
@@ -206,45 +228,6 @@ def _merge_sections(ppt_title: str, sections_latex: List[str], preferences: dict
     return preamble + "\n" + body + ending
 
 
-# ---------- 图片关键词提取（LLM一次性为所有section生成英文搜索词）----------
-def _extract_image_keywords(ppt_title: str, sections: List[dict]) -> dict:
-    """用LLM为所有section提取英文图片搜索关键词（一次调用）"""
-    sections_text = "\n".join([
-        f"Section {i}: {s['title'][:60]}\n  Key concepts: {'; '.join(s['points'][:3])}"
-        for i, s in enumerate(sections)
-    ])
-
-    prompt = f"""For each section of a Chinese presentation below, generate 2-3 short English keywords (1-3 words each) that would find relevant stock photos on Pexels.
-
-Presentation topic: {ppt_title[:100]}
-
-{sections_text}
-
-IMPORTANT:
-- Focus on concrete, visual nouns (e.g., "robot arm", "team collaboration", "computer code", "city skyline")
-- Avoid abstract terms that don't photograph well (not "synergy", "optimization theory")
-- Use common English terms that photographers tag their photos with
-
-Return ONLY a valid JSON object:
-{{"0": ["keyword1", "keyword2"], "1": ["keyword1", "keyword2"], ...}}
-Map the section index to its keywords array.
-
-JSON:"""
-
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=500
-    )
-    try:
-        text = response.choices[0].message.content.strip()
-        text = re.sub(r'^```json\s*|```$', '', text).strip()
-        return json.loads(text)
-    except (json.JSONDecodeError, KeyError, AttributeError):
-        return {}
-
-
 # ---------- PPT生成流水线（步骤1+2+3）----------
 def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
     """完整流水线：联网研究 → 大纲 → 关键词提取 → 配图 → 逐节生成 → 合并"""
@@ -268,12 +251,25 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
     total_points = sum(len(s["points"]) for s in sections)
     print(f"\n✅ 解析出 {len(sections)} 个小节，共 {total_points} 个要点（实际帧数由模型自主决定）")
 
-    # 搜索并下载配图（用LLM提取英文关键词）
-    section_images = {}
+    # 收集图片：用户图片 + 自动搜索
+    image_source = preferences.get("image_source", "both")
+    section_images = {}     # 自动搜索的图片 {section_index: local_path}
+    user_images = []        # 用户提供的图片 [{path, desc}, ...]
+
+    if image_source in ("user", "both"):
+        user_images = collect_user_images()
+        if user_images:
+            print(f"\n📁 检测到 {len(user_images)} 张用户图片：")
+            for img in user_images:
+                print(f"   - {os.path.basename(img['path'])}: {img['desc']}")
+        elif image_source == "user":
+            print(f"\n📁 user_images/ 目录为空，无用户图片可用")
+            print("   提示：将图片放入 user_images/ 目录，并编辑 descriptions.txt 添加描述")
+
     pexels_available = PEXELS_API_KEY and PEXELS_API_KEY != "YOUR_PEXELS_API_KEY"
-    if pexels_available:
+    if image_source in ("auto", "both") and pexels_available:
         print(f"\n🔑 正在为各节提取英文搜索关键词...")
-        section_keywords = _extract_image_keywords(ppt_title, sections)
+        section_keywords = extract_image_keywords(ppt_title, sections)
 
         print(f"🖼️  正在搜索配图...")
         for i, section in enumerate(sections):
@@ -294,18 +290,19 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
 
             if not found:
                 print(f"   [{i+1}/{len(sections)}] {section['title'][:30]}... -> 未找到相关图片，跳过")
-    else:
+    elif image_source == "auto" and not pexels_available:
         print(f"\n⚠️  未配置 Pexels API Key，跳过图片搜索。")
 
-    # 步骤2：逐节生成（注入研究简报）
+    # 步骤2：逐节生成（注入研究简报和图片）
     print(f"\n📝 步骤 2/3：正在逐节生成详细内容...")
     sections_latex = []
     for i, section in enumerate(sections):
         n_points = len(section["points"])
-        has_img = "🖼️" if i in section_images else ""
+        has_img = "🖼️" if (i in section_images or user_images) else ""
         print(f"  生成第 {i+1}/{len(sections)} 节: {section['title']}（{n_points} 个要点）{has_img}...")
         image_path = section_images.get(i)
-        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title, image_path, research_brief)
+        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title,
+                                         image_path, research_brief, user_images)
         sections_latex.append(latex)
 
     # 步骤3：合并
@@ -342,61 +339,6 @@ def generate_handout_from_outline(outline: str, preferences: dict) -> str:
     latex_code = response.choices[0].message.content
     latex_code = re.sub(r"^```latex\n?|```$", "", latex_code.strip())
     return latex_code
-
-
-# ---------- 图片搜索工具（Pexels API）----------
-def search_image(query: str, max_results: int = 3) -> List[str]:
-    headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": max_results}
-    try:
-        response = requests.get(PEXELS_API_URL, headers=headers, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return [photo['src']['original'] for photo in data.get('photos', [])]
-    except Exception as e:
-        print(f"   Pexels 搜索失败: {e}")
-        return []
-
-
-def search_image_pixabay(query: str, max_results: int = 3) -> List[str]:
-    """Pixabay 图片搜索（备选源）"""
-    if not PIXABAY_API_KEY:
-        return []
-    params = {"key": PIXABAY_API_KEY, "q": query, "per_page": max_results}
-    try:
-        response = requests.get(PIXABAY_API_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return [hit['largeImageURL'] for hit in data.get('hits', [])]
-    except Exception as e:
-        print(f"   Pixabay 搜索失败: {e}")
-        return []
-
-
-def search_image_combined(query: str, max_results: int = 3) -> List[str]:
-    """组合搜索：先 Pexels，无结果则 Pixabay"""
-    results = search_image(query, max_results)
-    if not results:
-        results = search_image_pixabay(query, max_results)
-    return results
-
-
-def download_image(url: str, save_dir: str = ".") -> Optional[str]:
-    """下载图片到本地，返回本地文件路径"""
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        ext = url.split('.')[-1].split('?')[0] or 'jpg'
-        if ext not in ('jpg', 'jpeg', 'png', 'gif', 'bmp'):
-            ext = 'jpg'
-        filename = hashlib.md5(url.encode()).hexdigest()[:12] + '.' + ext
-        filepath = os.path.join(save_dir, filename)
-        with open(filepath, 'wb') as f:
-            f.write(response.content)
-        return filepath.replace('\\', '/')  # LaTeX 必须使用正斜杠
-    except Exception as e:
-        print(f"   ⚠️ 图片下载失败: {e}")
-        return None
 
 
 # ---------- 工具包装类（注入偏好）----------

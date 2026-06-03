@@ -23,7 +23,7 @@ REACT_PROMPT = """你是一个智能助手，擅长生成PPT和讲义。当前�
 - web_fetch: 抓取指定网页的正文内容，输入为URL（字符串），返回提取的文本。
 - search_image: 根据关键词搜索并下载图片到本地，输入为关键词（字符串）。
 - get_preferences: 查看当前偏好设置，无需输入。
-- set_preference: 修改偏好，输入格式 'key=value'。可用键：ppt_theme, font_size, include_toc, handout_detail, enable_web_research。
+- set_preference: 修改偏好，输入格式 'key=value'。可用键：ppt_theme, font_size, include_toc, handout_detail, enable_web_research, image_source（auto=自动搜图, user=仅用user_images/中的图, both=两者都用）。
 
 工作流程建议：
 1. 如果用户要求生成PPT，直接将用户的完整需求传给 generate_ppt 工具，联网研究和配图全自动完成。

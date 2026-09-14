@@ -1,3 +1,0 @@
-earth_atmosphere.jpg: 地球大气层结构图，展示对流层-平流层-中间层的垂直分布
-ocean_waves.png: 海洋波浪与潮汐示意图
-# climate_data.jpg 未标注描述，将使用文件名 "climate_data"

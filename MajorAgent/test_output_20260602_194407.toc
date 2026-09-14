@@ -1,6 +1,0 @@
-\beamer@sectionintoc {1}{引言：为何气候变化是当今最紧迫的全球挑战}{3}{0}{1}
-\beamer@sectionintoc {2}{气候变化的科学基础：从温室效应到极端天气}{11}{0}{2}
-\beamer@sectionintoc {3}{气候变化的多维影响：生态、经济与社会系统}{21}{0}{3}
-\beamer@sectionintoc {4}{全球应对策略：减缓、适应与技术路径}{29}{0}{4}
-\beamer@sectionintoc {5}{案例与实践：国家、城市与行业层面的绿色转型}{38}{0}{5}
-\beamer@sectionintoc {6}{个人行动与未来展望：从碳足迹到系统性变革}{46}{0}{6}

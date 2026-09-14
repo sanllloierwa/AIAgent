@@ -8,10 +8,11 @@ venv/
 # 环境变量 / 密钥
 .env
 
-# 运行时数据
+# 运行时数据 / 报告文档
 users.json
 user_images/
 pexels_downloads/
+Agent Report/
 
 # IDE
 .vscode/

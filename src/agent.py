@@ -1,9 +1,7 @@
 # agent.py
 import re
 import json
-import subprocess
-import os
-import shutil
+import webbrowser
 from datetime import datetime
 from openai import OpenAI
 from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, DEEPSEEK_REASONING_EFFORT, MAX_AGENT_ROUNDS
@@ -18,7 +16,7 @@ REACT_PROMPT = """你是一个智能助手，擅长生成PPT和讲义。当前�
 
 你可以使用以下工具：
 - generate_ppt: 【联网研究+自动配图】生成完整详细的PPT。输入：用户的原始需求描述。工具内部自动完成"联网搜索→资料整理→大纲生成→搜索配图→逐节展开→合并"全流程。生成的PPT基于真实网络资料，数据可靠。
-- generate_handout: 根据纲要生成讲义的LaTeX代码。输入：文本纲要。
+- generate_handout: 根据纲要生成讲义的HTML代码。输入：文本纲要。
 - web_search: 联网搜索资料，输入为搜索关键词（字符串），返回标题、URL、摘要列表（JSON格式）。
 - web_fetch: 抓取指定网页的正文内容，输入为URL（字符串），返回提取的文本。
 - search_image: 根据关键词搜索并下载图片到本地，输入为关键词（字符串）。
@@ -49,66 +47,20 @@ Thought:
 """
 
 
-def _find_latex_compiler() -> str:
-    """查找可用的 LaTeX 编译器，优先 xelatex（原生Unicode/中文支持），其次 pdflatex"""
-    miktex_bin = os.path.expandvars(r'%LOCALAPPDATA%\Programs\MiKTeX\miktex\bin\x64')
-    system_miktex = r'C:\Program Files\MiKTeX\miktex\bin\x64'
-
-    for compiler in ['xelatex', 'pdflatex']:
-        if shutil.which(compiler):
-            return compiler
-        for base in [miktex_bin, system_miktex]:
-            exe = os.path.join(base, f'{compiler}.exe')
-            if os.path.exists(exe):
-                return exe
-    return 'xelatex'
-
-
-def save_and_compile(latex_code: str, username: str) -> str:
-    """保存 LaTeX 代码到 .tex 文件并尝试编译为 PDF"""
+def save_html_file(html_code: str, username: str) -> str:
+    """保存 HTML 代码到 .html 文件并自动在浏览器中打开"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    tex_filename = f"{username}_output_{timestamp}.tex"
-    # 修正 LLM 可能生成的错误路径：.\ → ./
-    latex_code = re.sub(r'\{\.\\([a-zA-Z0-9])', r'{./\1', latex_code)
-    with open(tex_filename, "w", encoding='utf-8') as f:
-        f.write(latex_code)
-    print(f"📄 LaTeX 代码已保存至 {tex_filename}")
+    html_filename = f"{username}_output_{timestamp}.html"
+    with open(html_filename, "w", encoding='utf-8') as f:
+        f.write(html_code)
+    print(f"📄 HTML 文件已保存至 {html_filename}")
 
-    print("🔄 正在尝试将 LaTeX 编译为 PDF ...")
-    compiler = _find_latex_compiler()
-    print(f"   使用编译器: {compiler}")
     try:
-        result = subprocess.run(
-            [compiler, '-interaction=nonstopmode', '-output-directory',
-             os.path.dirname(tex_filename) or '.', tex_filename],
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode == 0:
-            subprocess.run(
-                [compiler, '-interaction=nonstopmode', '-output-directory',
-                 os.path.dirname(tex_filename) or '.', tex_filename],
-                capture_output=True, text=True, timeout=60
-            )
-        base_name = os.path.splitext(tex_filename)[0]
-        pdf_path = f"{base_name}.pdf"
-        if os.path.exists(pdf_path):
-            print(f"✅ 已生成可演示的 PDF 文件: {pdf_path}")
-            print("   你可以直接打开该 PDF 文件进行演示。")
-            return tex_filename
-        else:
-            log_path = f"{base_name}.log"
-            print(f"⚠️ 编译失败，请查看日志 {log_path}")
-            print(f"   请手动编译 .tex 文件以获得 PDF: {compiler} {tex_filename}")
-            return tex_filename
-    except FileNotFoundError:
-        print("⚠️ 未找到 LaTeX 编译器。请安装 MiKTeX 或 TeX Live。")
-        return tex_filename
-    except subprocess.TimeoutExpired:
-        print("⚠️ 编译超时，请手动编译。")
-        return tex_filename
+        webbrowser.open(html_filename)
+        print("🖥️  已在浏览器中打开，使用方向键/空格翻页。")
     except Exception as e:
-        print(f"⚠️ 编译异常: {e}")
-        return tex_filename
+        print(f"⚠️ 自动打开浏览器失败: {e}，请手动打开该文件。")
+    return html_filename
 
 
 def run_agent(username: str, user_info: dict, tools, update_prefs_callback, first_question: str = None):
@@ -154,11 +106,11 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
             tool_input = input_match.group(1).strip().strip('"')
             if tool_name in tool_funcs:
                 observation = tool_funcs[tool_name](tool_input)
-                # 如果工具返回了 LaTeX 代码，立即保存
-                if isinstance(observation, str) and observation.startswith(r"\documentclass"):
-                    save_and_compile(observation, username)
+                # 如果工具返回了完整 HTML 文档，立即保存
+                if isinstance(observation, str) and observation.strip().lower().startswith(("<!doctype html", "<html")):
+                    save_html_file(observation, username)
                     obs_lines = observation.count('\n')
-                    observation = f"[LaTeX文档已生成并保存，共{obs_lines}行]"
+                    observation = f"[HTML文档已生成并保存，共{obs_lines}行]"
                 elif isinstance(observation, str):
                     if len(observation) > 500:
                         observation = observation[:500] + "..."
@@ -179,11 +131,11 @@ def run_agent(username: str, user_info: dict, tools, update_prefs_callback, firs
         if "Final Answer:" in llm_output:
             final = llm_output.split("Final Answer:")[-1].strip()
             print(f"✅ 最终结果已输出。")
-            # 只在工具还没保存过文件时，才从 Final Answer 中提取 LaTeX
-            code_match = re.search(r"```latex\n(.*?)\n```", final, re.DOTALL)
+            # 只在工具还没保存过文件时，才从 Final Answer 中提取 HTML
+            code_match = re.search(r"```html\n(.*?)\n```", final, re.DOTALL)
             if code_match and not (action_match and input_match and tool_name == "generate_ppt"):
-                latex_code = code_match.group(1)
-                save_and_compile(latex_code, username)
+                html_code = code_match.group(1)
+                save_html_file(html_code, username)
             break
 
     # 询问是否继续

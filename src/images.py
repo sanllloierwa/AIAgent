@@ -3,6 +3,7 @@ import json
 import os
 import re
 import hashlib
+import base64
 import requests
 from typing import List, Optional
 from openai import OpenAI
@@ -24,7 +25,7 @@ def search_image(query: str, max_results: int = 3) -> List[str]:
         response = requests.get(PEXELS_API_URL, headers=headers, params=params)
         response.raise_for_status()
         data = response.json()
-        return [photo['src']['original'] for photo in data.get('photos', [])]
+        return [photo['src']['large'] for photo in data.get('photos', [])]
     except Exception as e:
         print(f"   Pexels 搜索失败: {e}")
         return []
@@ -111,6 +112,26 @@ JSON:"""
         return {}
 
 
+# ---------- Base64 编码（HTML data URI 内嵌） ----------
+_MIME_MAP = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif",
+    ".webp": "image/webp", ".svg": "image/svg+xml",
+}
+
+
+def image_to_data_uri(path: str) -> Optional[str]:
+    """读取本地图片并编码为 data URI，供 HTML <img src> 内嵌使用"""
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("ascii")
+        mime = _MIME_MAP.get(os.path.splitext(path)[1].lower(), "image/jpeg")
+        return f"data:{mime};base64,{data}"
+    except Exception as e:
+        print(f"   ⚠️ 图片编码失败 {path}: {e}")
+        return None
+
+
 # ---------- 用户本地图片收集 ----------
 def collect_user_images() -> List[dict]:
     """扫描 user_images/ 目录，读取 descriptions.txt，返回 [{path, desc}, ...]"""
@@ -130,7 +151,7 @@ def collect_user_images() -> List[dict]:
                 if len(parts) == 2:
                     desc_map[parts[0].strip()] = parts[1].strip()
 
-    valid_exts = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".pdf"}
+    valid_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
     result = []
     for fname in sorted(os.listdir(images_dir)):
         ext = os.path.splitext(fname)[1].lower()

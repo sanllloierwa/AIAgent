@@ -2,7 +2,6 @@
 import json
 import os
 import sys
-import re
 
 # 切到 src 目录以便导入
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,13 +88,13 @@ check("第3节有4个要点", len(sections[2]["points"]) == 4)
 
 
 # ============================================================
-# 3. 单节 LaTeX 生成（不调 LLM，仅验证 prompt 拼接）
+# 3. 单节 HTML 生成（不调 LLM，仅验证 prompt 拼接）
 # ============================================================
 print("\n" + "=" * 60)
-print("3. _generate_section_latex() prompt 拼接")
+print("3. _generate_section_html() prompt 拼接")
 print("=" * 60)
 
-from tools import _generate_section_latex
+from tools import _generate_section_html
 
 # 用小 topic 触发快速生成（会调 LLM）
 section = {"title": "气候变化的科学基础", "points": ["温室效应的基本原理", "CO2浓度变化趋势"]}
@@ -104,7 +103,7 @@ prefs = {"image_source": "user"}
 # 测试 user_images 参数传入后 prompt 中是否包含图片列表
 # （不实际调 LLM，直接看函数签名是否正确）
 import inspect
-sig = inspect.signature(_generate_section_latex)
+sig = inspect.signature(_generate_section_html)
 params = list(sig.parameters.keys())
 check("参数包含 user_images", "user_images" in params)
 check("参数包含 image_path", "image_path" in params)
@@ -121,16 +120,18 @@ print("=" * 60)
 from tools import _merge_sections
 
 fake_sections = [
-    r"\section{测试1}\begin{frame}\frametitle{Test}Content\end{frame}",
-    r"\section{测试2}\begin{frame}\frametitle{Test2}More\end{frame}",
+    "<section><h2>测试1</h2><ul><li>内容A</li></ul></section>",
+    "<section><h2>测试2</h2><ul><li>内容B</li></ul></section>",
 ]
-merged = _merge_sections("测试PPT", fake_sections, prefs)
-check("合并后包含 documentclass", r"\documentclass" in merged)
-check("合并后包含 begin document", r"\begin{document}" in merged)
-check("合并后包含 end document", r"\end{document}" in merged)
+merged = _merge_sections("测试PPT", fake_sections, prefs,
+                         section_titles=["测试1", "测试2"])
+check("合并后包含 DOCTYPE", "<!DOCTYPE html>" in merged)
+check("合并后包含 reveal 容器", '<div class="reveal">' in merged)
+check("合并后包含 reveal.js CDN", "cdn.jsdelivr.net/npm/reveal.js" in merged)
+check("合并后包含 theme css 链接", "dist/theme/white.css" in merged)
 check("合并后包含两个 section 内容", "测试1" in merged and "测试2" in merged)
-check("合并后包含 graphicx 包", r"\usepackage{graphicx}" in merged)
-check("合并后包含 ctex 包", r"\usepackage{ctex}" in merged)
+check("合并后包含目录页", "目录" in merged)
+check("合并后包含 Reveal.initialize", "Reveal.initialize" in merged)
 
 
 # ============================================================
@@ -179,7 +180,7 @@ print("\n" + "=" * 60)
 print("6. images.py 函数完整性")
 print("=" * 60)
 
-from images import search_image, search_image_pixabay, download_image
+from images import search_image, search_image_pixabay, download_image, image_to_data_uri
 
 check("search_image 可调用", callable(search_image))
 check("search_image_pixabay 可调用", callable(search_image_pixabay))
@@ -187,6 +188,13 @@ check("search_image_combined 可调用", callable(search_image_combined))
 check("download_image 可调用", callable(download_image))
 check("extract_image_keywords 可调用", callable(extract_image_keywords))
 check("collect_user_images 可调用", callable(collect_user_images))
+check("image_to_data_uri 可调用", callable(image_to_data_uri))
+
+# 真实图片 Base64 编码
+data_uri = image_to_data_uri(os.path.join("user_images", "climate_data.jpg"))
+check("climate_data.jpg 编码为 jpeg data URI",
+      isinstance(data_uri, str) and data_uri.startswith("data:image/jpeg;base64,"))
+check("data URI 长度合理（>1000字符）", isinstance(data_uri, str) and len(data_uri) > 1000)
 
 
 # ============================================================
@@ -210,15 +218,15 @@ title_only, _ = _parse_outline("# TITLE: 只有标题")
 check("只有标题的标题解析正确", title_only == "只有标题")
 
 # user_images 为空列表时的处理
-from tools import _generate_section_latex as gen_sec
+from tools import _generate_section_html as gen_sec
 # 传入空的 user_images 不应崩溃
 # （不实际调 LLM，只验证参数传递）
 
-# LaTeX 特殊字符转义（section title 中的 & _ % 等）
+# HTML 特殊字符（section title 中的 & _ % 等，HTML 无需转义）
 special_section = {"title": "测试 & 特殊 _ 字符 %", "points": ["要点1"]}
 # 验证 _merge_sections 不会因特殊字符崩溃
 try:
-    _merge_sections("标题 & 特殊%", [r"\section{OK}\begin{frame}OK\end{frame}"], prefs)
+    _merge_sections("标题 & 特殊%", ["<section><h2>OK</h2></section>"], prefs)
     check("合并含特殊字符的标题不崩溃", True)
 except Exception as e:
     check("合并含特殊字符的标题不崩溃", False, str(e))

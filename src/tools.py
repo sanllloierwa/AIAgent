@@ -2,6 +2,7 @@
 import json
 import os
 import re
+from datetime import datetime
 from typing import List, Tuple, Optional
 from openai import OpenAI
 from config import (
@@ -11,13 +12,37 @@ from config import (
 from research import research_topic, web_search, web_fetch, HAS_DDGS
 from images import (
     search_image_combined, download_image,
-    extract_image_keywords, collect_user_images
+    extract_image_keywords, collect_user_images, image_to_data_uri
 )
 
 deepseek_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL
 )
+
+# Reveal.js CDN（jsdelivr 国内可访问）
+REVEAL_CDN = "https://cdn.jsdelivr.net/npm/reveal.js@5.1.0"
+
+# Beamer 主题名 → Reveal.js 主题名（未知值原样透传）
+REVEAL_THEME_MAP = {
+    "default": "white",
+    "madrid": "black",
+    "berlin": "league",
+    "copenhagen": "sky",
+    "warsaw": "night",
+    "singapore": "simple",
+    "rochester": "serif",
+    "annarbor": "moon",
+    "antibes": "blood",
+    "montpellier": "beige",
+    "pittsburgh": "solarized",
+}
+
+# LaTeX 字号偏好 → CSS 像素字号
+FONT_SIZE_MAP = {
+    "10pt": "18px", "11pt": "20px", "12pt": "22px",
+    "14pt": "24px", "17pt": "28px", "20pt": "32px",
+}
 
 # ---------- 步骤1：生成PPT大纲（不预设帧，只列要点）----------
 def generate_ppt_outline(requirement: str, preferences: dict, research_brief: Optional[str] = None) -> str:
@@ -98,9 +123,9 @@ def _parse_outline(outline_text: str) -> Tuple[str, List[dict]]:
     return title, sections
 
 
-# ---------- 步骤2：为单个section生成详细LaTeX（自主决定帧数）----------
-def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None, research_brief: Optional[str] = None, user_images: Optional[List[dict]] = None) -> str:
-    """为单个section生成Beamer LaTeX帧（不含preamble），模型自主决定拆成几帧"""
+# ---------- 步骤2：为单个section生成HTML幻灯片（自主决定帧数）----------
+def _generate_section_html(section: dict, preferences: dict, sec_idx: int, total_sec: int, ppt_title: str, image_path: Optional[str] = None, research_brief: Optional[str] = None, user_images: Optional[List[dict]] = None) -> str:
+    """为单个section生成 Reveal.js <section> 块，模型自主决定拆成几帧"""
     points_text = "\n".join([f"  {i+1}. {p}" for i, p in enumerate(section["points"])])
 
     research_section = ""
@@ -114,7 +139,7 @@ def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, tota
     image_instruction = ""
     if user_images:
         img_list = "\n".join([
-            f"\\includegraphics[width=0.7\\textwidth]{{{img['path']}}}   -- {img['desc']}"
+            f"- {os.path.basename(img['path'])} -- {img['desc']}"
             for img in user_images
         ])
         image_instruction = f"""
@@ -122,33 +147,10 @@ def _generate_section_latex(section: dict, preferences: dict, sec_idx: int, tota
 
 {img_list}
 
-使用方式（直接复制上面选中的那行 \\includegraphics 代码即可）：
-```
-\\begin{{frame}}\\frametitle{{...}}
-\\begin{{center}}
-（在此粘贴你选中的 \\includegraphics 命令，路径必须完全一致）
-\\end{{center}}
-\\end{{frame}}
-```
-- 插入图片后可加1帧简短解读，说明图片与本节的关联
+使用方式：在想插入图片的位置，单独写一行占位符 `[IMG:文件名]`（例如 `[IMG:climate_data.jpg]`），程序会自动把它替换为真正的图片。
 - **如果没有一张图片与本节内容相关，不要强行插入**"""
-    elif image_path:
-        image_instruction = f"""
-图片素材：本节配有一张配图，路径为 `{image_path}`（路径必须使用正斜杠/，严禁使用反斜杠\\）。
 
-使用原则：
-- 如果图片能呼应本节主题，在概述帧之后插入图片帧（1帧即可）：
-```
-\\begin{{frame}}\\frametitle{{...}}
-\\begin{{center}}
-\\includegraphics[width=0.7\\textwidth]{{{image_path}}}
-\\end{{center}}
-\\end{{frame}}
-```
-- 插入图片后可加1帧简短解读，说明图片与本节的关联。
-- **如果图片与本节内容完全无关，不要强行插入**——宁可不用也不要破坏专业性。"""
-
-    prompt = f"""你是一个LaTeX Beamer专家。请为以下PPT中的**单独一节**生成Beamer LaTeX代码。
+    prompt = f"""你是一个HTML/Reveal.js幻灯片专家。请为以下PPT中的**单独一节**生成 Reveal.js 的 <section> 幻灯片块。
 
 PPT总标题：{ppt_title}
 当前进度：第 {sec_idx}/{total_sec} 节
@@ -162,12 +164,12 @@ PPT总标题：{ppt_title}
 核心要求：
 1. **内容要详细**：每个要点展开为3-5句的详细说明，添加具体案例、数据或示例。
 2. **自主决定帧数**：根据内容量自行决定拆成几帧（通常3-8帧）。复杂要点可以独占一帧，简单要点可以合并。不要让任何一帧的内容溢出幻灯片。
-3. **每帧内容适量**：一帧内最多放1-2个主题+展开说明。如果 \\item 的展开段落超过5行，说明该主题应该单独成帧。
-4. 第一帧必须是节标题+本节概览：列出本节的几个子主题（3-5条简短提要）。
-5. 使用 \\begin{{frame}}\\frametitle{{...}}...\\end{{frame}} 结构。
-6. 适当使用 \\textbf{{}}、\\alert{{}} 强调关键词，使用 \\begin{{itemize}} 组织要点。
-7. **只输出 \\section{{...}} 和一系列 \\begin{{frame}}...\\end{{frame}} 块**，不要包含 \\documentclass、\\begin{{document}}、\\end{{document}}。
-8. 不要使用 ```latex 代码块包裹，直接输出纯LaTeX代码。"""
+3. **每帧内容适量**：一帧内最多放1-2个主题+展开说明，列表项最多6条。
+4. 第一帧必须是节标题+本节概览：<h2>节标题</h2> + 3-5条简短提要的 <ul>。
+5. 每帧结构：<section><h2>或<h3>帧标题</h3>...</section>，帧与帧之间换行分隔。
+6. 适当使用 <strong> 和 <span class="alert"> 强调关键词，使用 <ul>/<ol> 组织要点，可用 <table> 展示对比数据。
+7. **只输出该节的一系列 <section>...</section> 块**，不要输出 <!DOCTYPE html>、<html>、<head>、<body>、<script> 等外层结构。
+8. 不要使用 ```html 代码块包裹，直接输出纯HTML代码。"""
 
     response = deepseek_client.chat.completions.create(
         model=DEEPSEEK_MODEL,
@@ -176,56 +178,147 @@ PPT总标题：{ppt_title}
         reasoning_effort=DEEPSEEK_REASONING_EFFORT,
         extra_body={"thinking": {"type": "enabled"}}
     )
-    code = response.choices[0].message.content.strip()
-    code = re.sub(r"^```latex\n?|```$", "", code)
-    return code
+    html = response.choices[0].message.content.strip()
+    html = re.sub(r"^```html?\n?|```$", "", html)
+
+    # 后处理：替换用户图片占位符 [IMG:文件名] 为 base64 data URI
+    if user_images:
+        by_name = {os.path.basename(img["path"]): img["path"] for img in user_images}
+        for name, path in by_name.items():
+            data_uri = image_to_data_uri(path)
+            if data_uri:
+                html = re.sub(
+                    rf"\[IMG:\s*{re.escape(name)}\s*\]",
+                    f'<img src="{data_uri}" alt="{name}" style="max-width:60%;max-height:55%;border-radius:8px;">',
+                    html
+                )
+
+    # 后处理：自动配图插入到第一节（概述帧）之后
+    if image_path:
+        data_uri = image_to_data_uri(image_path)
+        if data_uri:
+            image_slide = (
+                f'\n<section>\n<h3>{section["title"]}</h3>\n'
+                f'<img src="{data_uri}" alt="{section["title"]} 配图" style="max-width:65%;max-height:60%;border-radius:8px;">\n'
+                f'</section>'
+            )
+            if "</section>" in html:
+                html = html.replace("</section>", image_slide + "\n</section>", 1)
+            else:
+                html = html + image_slide
+
+    return html
 
 
-# ---------- 步骤3：合并所有section为完整Beamer文档 ----------
-def _merge_sections(ppt_title: str, sections_latex: List[str], preferences: dict) -> str:
-    """将preamble和所有section的LaTeX合并为完整文档"""
+# ---------- 步骤3：合并所有section为完整 Reveal.js HTML 文档 ----------
+def _merge_sections(ppt_title: str, sections_html: List[str], preferences: dict, section_titles: Optional[List[str]] = None) -> str:
+    """将所有section的HTML合并为完整的 Reveal.js 幻灯片文档"""
     theme = preferences.get('ppt_theme', 'default')
     font_size = preferences.get('font_size', '11pt')
     include_toc = preferences.get('include_toc', True)
 
-    theme_map = {
-        "default": "default",
-        "madrid": "Madrid",
-        "berlin": "Berlin",
-        "copenhagen": "Copenhagen",
-        "warsaw": "Warsaw",
-        "singapore": "Singapore",
-        "rochester": "Rochester",
-        "annarbor": "AnnArbor",
-        "antibes": "Antibes",
-        "montpellier": "Montpellier",
-        "pittsburgh": "Pittsburgh",
-    }
-    theme_name = theme_map.get(theme.lower(), theme)
+    theme_name = REVEAL_THEME_MAP.get(theme.lower(), theme)
+    font_px = FONT_SIZE_MAP.get(font_size, "20px")
 
-    toc_block = "\\tableofcontents\n\\newpage" if include_toc else ""
+    toc_block = ""
+    if include_toc and section_titles:
+        toc_items = "\n".join(f"<li>{t}</li>" for t in section_titles)
+        toc_block = f"""<section>
+<h2>目录</h2>
+<ul>
+{toc_items}
+</ul>
+</section>
 
-    preamble = f"""\\documentclass[{font_size}]{{beamer}}
-\\usetheme{{{theme_name}}}
-\\usepackage{{ctex}}
-\\usepackage{{graphicx}}
-
-\\title{{{ppt_title}}}
-\\author{{AI Agent 生成}}
-\\date{{\\today}}
-
-\\begin{{document}}
-
-\\maketitle
-
-{toc_block}
 """
 
-    body = "\n\n".join(sections_latex)
+    title_slide = f"""<section>
+<h1>{ppt_title}</h1>
+<p class="meta">AI Agent 生成 · {datetime.now().strftime('%Y年%m月%d日')}</p>
+</section>
 
-    ending = "\n\n\\end{document}"
+{toc_block}"""
 
-    return preamble + "\n" + body + ending
+    body = "\n\n".join(sections_html)
+
+    document = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{ppt_title}</title>
+<link rel="stylesheet" href="{REVEAL_CDN}/dist/reveal.css">
+<link rel="stylesheet" href="{REVEAL_CDN}/dist/theme/{theme_name}.css">
+<style>
+:root {{
+  --base-font-size: {font_px};
+}}
+.reveal {{
+  font-size: var(--base-font-size);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+}}
+.reveal h1, .reveal h2, .reveal h3 {{
+  font-weight: 700;
+}}
+.reveal .alert {{
+  color: #e74c3c;
+  font-weight: 700;
+}}
+.reveal .meta {{
+  color: #888;
+  font-size: 0.6em;
+}}
+.reveal img {{
+  max-width: 80%;
+  max-height: 60vh;
+  margin: 0 auto;
+  display: block;
+}}
+.reveal table {{
+  margin: 0 auto;
+  border-collapse: collapse;
+  font-size: 0.75em;
+}}
+.reveal th, .reveal td {{
+  border: 1px solid #999;
+  padding: 0.4em 0.8em;
+}}
+.reveal ul, .reveal ol {{
+  text-align: left;
+  display: inline-block;
+}}
+.reveal li {{
+  margin: 0.35em 0;
+  line-height: 1.5;
+}}
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+{title_slide}
+
+{body}
+
+</div>
+</div>
+<script src="{REVEAL_CDN}/dist/reveal.js"></script>
+<script>
+Reveal.initialize({{
+  hash: true,
+  slideNumber: 'c/t',
+  transition: 'slide',
+  progress: true,
+  controls: true,
+  width: 1280,
+  height: 720
+}});
+</script>
+</body>
+</html>"""
+
+    return document
 
 
 # ---------- PPT生成流水线（步骤1+2+3）----------
@@ -295,27 +388,30 @@ def generate_ppt_pipeline(requirement: str, preferences: dict) -> str:
 
     # 步骤2：逐节生成（注入研究简报和图片）
     print(f"\n📝 步骤 2/3：正在逐节生成详细内容...")
-    sections_latex = []
+    sections_html = []
     for i, section in enumerate(sections):
         n_points = len(section["points"])
         has_img = "🖼️" if (i in section_images or user_images) else ""
         print(f"  生成第 {i+1}/{len(sections)} 节: {section['title']}（{n_points} 个要点）{has_img}...")
         image_path = section_images.get(i)
-        latex = _generate_section_latex(section, preferences, i + 1, len(sections), ppt_title,
-                                         image_path, research_brief, user_images)
-        sections_latex.append(latex)
+        html = _generate_section_html(section, preferences, i + 1, len(sections), ppt_title,
+                                       image_path, research_brief, user_images)
+        sections_html.append(html)
 
     # 步骤3：合并
     print(f"\n🔗 步骤 3/3：正在合并所有章节...")
-    final_latex = _merge_sections(ppt_title, sections_latex, preferences)
+    final_html = _merge_sections(
+        ppt_title, sections_html, preferences,
+        section_titles=[s["title"] for s in sections]
+    )
     print(f"✅ PPT 生成完成！共 {len(sections)} 节。")
 
-    return final_latex
+    return final_html
 
 
 # ---------- 讲义生成 ----------
 def generate_handout_from_outline(outline: str, preferences: dict) -> str:
-    prompt = f"""你是一个 LaTeX 专家。请根据以下讲座/讲义纲要和用户偏好，生成完整的 LaTeX 讲义文档。
+    prompt = f"""你是一个HTML文档排版专家。请根据以下讲座/讲义纲要和用户偏好，生成完整的 HTML 讲义文档。
 
 用户偏好：
 - 详细程度：{preferences.get('handout_detail', 'medium')}
@@ -325,20 +421,21 @@ def generate_handout_from_outline(outline: str, preferences: dict) -> str:
 {outline}
 
 要求：
-1. 输出纯 LaTeX 代码，使用 \\documentclass[11pt]{{article}} 或根据偏好调整。
-2. 讲义应包括标题、作者（设为"AI Agent 生成"）、日期。
-3. 根据纲要组织章节（\\section）和子节（\\subsection）。
-4. 详细程度为 brief 时只保留核心条目；medium 时加入简单说明；full 时加入详细解释和示例。
-5. 仅输出 LaTeX 代码。
+1. 输出完整 HTML 文档（从 <!DOCTYPE html> 到 </html>），lang="zh-CN"，<meta charset="UTF-8">。
+2. 在 <head> 内联 <style> 实现 article 排版：内容列最大宽度 800px 居中、中文字体（"Microsoft YaHei", "PingFang SC", sans-serif）、行高 1.8、标题分级样式、列表和表格样式。
+3. 讲义包括主标题（<h1>）、作者"AI Agent 生成"、日期（<p class="meta">）。
+4. 根据纲要组织章节（<h2>）和子节（<h3>），使用 <ul>/<ol>/<p>/<table> 呈现内容。
+5. 详细程度为 brief 时只保留核心条目；medium 时加入简单说明；full 时加入详细解释和示例。
+6. 不要使用 ```html 代码块包裹，直接输出纯HTML代码。
 """
     response = deepseek_client.chat.completions.create(
         model=DEEPSEEK_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
-    latex_code = response.choices[0].message.content
-    latex_code = re.sub(r"^```latex\n?|```$", "", latex_code.strip())
-    return latex_code
+    html = response.choices[0].message.content
+    html = re.sub(r"^```html?\n?|```$", "", html.strip())
+    return html
 
 
 # ---------- 工具包装类（注入偏好）----------

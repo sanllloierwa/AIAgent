@@ -164,12 +164,69 @@ PPT总标题：{ppt_title}
 核心要求：
 1. **内容要详细**：每个要点展开为3-5句的详细说明，添加具体案例、数据或示例。
 2. **自主决定帧数**：根据内容量自行决定拆成几帧（通常3-8帧）。复杂要点可以独占一帧，简单要点可以合并。不要让任何一帧的内容溢出幻灯片。
-3. **每帧内容适量**：一帧内最多放1-2个主题+展开说明，列表项最多6条。
+3. **每帧内容适量**：一帧内最多放1-2个主题+展开说明，列表项最多6条。优先用列表而非大段文字。
 4. 第一帧必须是节标题+本节概览：<h2>节标题</h2> + 3-5条简短提要的 <ul>。
 5. 每帧结构：<section><h2>或<h3>帧标题</h3>...</section>，帧与帧之间换行分隔。
-6. 适当使用 <strong> 和 <span class="alert"> 强调关键词，使用 <ul>/<ol> 组织要点，可用 <table> 展示对比数据。
+6. 适当使用 <strong> 和 <span class="alert"> 强调关键词。
 7. **只输出该节的一系列 <section>...</section> 块**，不要输出 <!DOCTYPE html>、<html>、<head>、<body>、<script> 等外层结构。
-8. 不要使用 ```html 代码块包裹，直接输出纯HTML代码。"""
+8. 不要使用 ```html 代码块包裹，直接输出纯HTML代码。
+
+【版式范式——必须遵守，防止整节都是"标题+段落"】
+根据每帧内容的逻辑结构，从以下 5 种版式中选择最合适的一种（样式类已内置，直接使用即可）：
+
+对比帧（两组对立/并列概念比较）：
+<section>
+<h3>传统方法 vs 大模型</h3>
+<div class="two-col">
+<div><div class="col-head">传统方法</div><ul><li>要点1</li><li>要点2</li></ul></div>
+<div><div class="col-head">大模型</div><ul><li>要点1</li><li>要点2</li></ul></div>
+</div>
+</section>
+
+时间线帧（按年份/阶段演进）：
+<section>
+<h3>发展里程碑</h3>
+<div class="timeline">
+<div class="tl-item"><span class="tl-year">1956年</span><span>达特茅斯会议，AI 学科诞生</span></div>
+<div class="tl-item"><span class="tl-year">2012年</span><span>AlexNet 开启深度学习时代</span></div>
+</div>
+</section>
+
+数据帧（突出关键数字）：
+<section>
+<h3>规模跃升的关键数据</h3>
+<div class="stats">
+<div class="stat"><span class="num">1750亿</span><span class="label">GPT-3 参数规模</span></div>
+<div class="stat"><span class="num">1亿</span><span class="label">ChatGPT 两个月用户数</span></div>
+</div>
+</section>
+
+案例帧（结构化案例：背景/方案/结果）：
+<section>
+<h3>案例：AlphaGo</h3>
+<div class="cards">
+<div class="card"><div class="card-head">背景</div>围棋复杂度远超国际象棋，传统方法难以突破</div>
+<div class="card"><div class="card-head">方案</div>深度网络+蒙特卡洛树搜索+强化学习</div>
+<div class="card"><div class="card-head">结果</div>4:1 击败世界冠军李世石</div>
+</div>
+</section>
+
+流程帧（步骤/流程）：
+<section>
+<h3>工作流程</h3>
+<div class="flow">
+<div class="step">搜索资料</div><div class="arrow">→</div><div class="step">生成大纲</div><div class="arrow">→</div><div class="step">逐节展开</div>
+</div>
+</section>
+
+版式选择规则（必须执行）：
+- 每节至少使用 1-2 种特殊版式（时间线/对比/数据/案例/流程），禁止整节全是普通"标题+列表"帧
+- 要点含年份/阶段演进 → 必须用时间线帧
+- 要点含两组对立或并列概念 → 必须用对比帧
+- 要点含关键数字（参数、百分比、规模、金额）→ 用数据帧突出
+- 案例/应用类要点 → 用案例卡片帧
+- 讲步骤、流程、工作原理 → 用流程帧
+- 相邻两帧不使用相同版式"""
 
     response = deepseek_client.chat.completions.create(
         model=DEEPSEEK_MODEL,
@@ -290,6 +347,94 @@ def _merge_sections(ppt_title: str, sections_html: List[str], preferences: dict,
 .reveal li {{
   margin: 0.35em 0;
   line-height: 1.5;
+}}
+/* ---- 版式范式工具类 ---- */
+.reveal .two-col {{
+  display: flex;
+  gap: 1.5em;
+  justify-content: center;
+}}
+.reveal .two-col > div {{
+  flex: 1;
+  text-align: left;
+}}
+.reveal .col-head {{
+  font-weight: 700;
+  font-size: 1.05em;
+  margin-bottom: 0.5em;
+  padding-bottom: 0.25em;
+  border-bottom: 3px solid rgba(127, 127, 127, 0.5);
+}}
+.reveal .timeline {{
+  display: inline-block;
+  text-align: left;
+}}
+.reveal .tl-item {{
+  display: flex;
+  gap: 1em;
+  margin: 0.55em 0;
+  align-items: baseline;
+}}
+.reveal .tl-year {{
+  font-weight: 700;
+  min-width: 5.5em;
+  color: #e67e22;
+}}
+.reveal .stats {{
+  display: flex;
+  gap: 1.5em;
+  justify-content: center;
+  flex-wrap: wrap;
+}}
+.reveal .stat {{
+  background: rgba(127, 127, 127, 0.12);
+  border-radius: 10px;
+  padding: 0.6em 1.2em;
+}}
+.reveal .stat .num {{
+  display: block;
+  font-size: 1.8em;
+  font-weight: 700;
+  color: #e74c3c;
+}}
+.reveal .stat .label {{
+  font-size: 0.7em;
+  opacity: 0.85;
+}}
+.reveal .cards {{
+  display: flex;
+  gap: 1em;
+  justify-content: center;
+}}
+.reveal .card {{
+  flex: 1;
+  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-radius: 10px;
+  padding: 0.6em;
+  text-align: left;
+}}
+.reveal .card-head {{
+  font-weight: 700;
+  margin-bottom: 0.3em;
+  font-size: 0.9em;
+}}
+.reveal .flow {{
+  display: flex;
+  gap: 0.8em;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}}
+.reveal .step {{
+  background: rgba(127, 127, 127, 0.15);
+  border-radius: 8px;
+  padding: 0.4em 0.9em;
+  font-weight: 700;
+}}
+.reveal .arrow {{
+  font-size: 1.3em;
+  opacity: 0.6;
 }}
 </style>
 </head>

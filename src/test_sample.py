@@ -132,6 +132,11 @@ check("合并后包含 theme css 链接", "dist/theme/white.css" in merged)
 check("合并后包含两个 section 内容", "测试1" in merged and "测试2" in merged)
 check("合并后包含目录页", "目录" in merged)
 check("合并后包含 Reveal.initialize", "Reveal.initialize" in merged)
+check("合并后包含 two-col 版式类", ".two-col" in merged)
+check("合并后包含 timeline 版式类", ".timeline" in merged)
+check("合并后包含 stats 数据版式类", ".stats" in merged)
+check("合并后包含 cards 案例版式类", ".cards" in merged)
+check("合并后包含 flow 流程版式类", ".flow" in merged)
 
 
 # ============================================================
